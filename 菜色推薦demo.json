@@ -1,0 +1,497 @@
+{
+  "name": "菜色推薦demo",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "line-webhook",
+        "options": {}
+      },
+      "id": "fe42fc06-675b-45ac-b943-4db430927367",
+      "name": "Webhook from Line Message",
+      "type": "n8n-nodes-base.webhook",
+      "position": [
+        -880,
+        -48
+      ],
+      "webhookId": "238cd352-5b09-48b8-8b4b-2f70998197db",
+      "typeVersion": 2
+    },
+    {
+      "parameters": {
+        "operation": "xlsx",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1,
+      "position": [
+        96,
+        -64
+      ],
+      "id": "d617629a-ca57-4a94-83c5-620013cdf3ff",
+      "name": "Extract from File"
+    },
+    {
+      "parameters": {
+        "url": "=https://api-data.line.me/v2/bot/message/{{ $json.body.events[0].message.id }}/content",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "file"
+            }
+          }
+        }
+      },
+      "id": "f8e8b8f5-6c23-44d4-b6bc-6aba3a7bb6b9",
+      "name": "取得檔案",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [
+        -112,
+        -64
+      ],
+      "typeVersion": 4.2
+    },
+    {
+      "parameters": {
+        "jsCode": "// $input.all() 是菜單表格資料 (每列一個 item)\nconst menuItems = $input.all().map(item => item.json);\n\n// 1. 先拿到 static data 物件（global 範圍）\nconst staticData = $getWorkflowStaticData('global');\n\n// 2. 把菜單存進去，讓其它 workflow 節點都可以用\nstaticData.menu = menuItems;\n\n// 3. 把資料往後傳（如果後面還有節點要用）\nreturn [\n  {\n    json: {\n      staticData\n    },\n  },\n];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        400,
+        -64
+      ],
+      "id": "1abc31d2-e36d-4304-b06e-d423b3ed7747",
+      "name": "儲存菜單至全域變數中"
+    },
+    {
+      "parameters": {
+        "jsCode": "// 1. 從 static data 拿菜單\nconst staticData = $getWorkflowStaticData('global');\nconst menu = staticData.menu || [];\n\n// 2. 取得剛剛 AI 回傳的 JSON(限制條件)\nconst rawText = $json.content?.parts?.[0]?.text || '{}';\nlet config;\ntry {\n  config = JSON.parse(rawText);\n} catch (error) {\n  config = {};\n}\n\nconst filters = config.filters || [];\nconst sortBy = config.sortBy || null;\nconst sortOrder = (config.sortOrder || 'ASC').toUpperCase();\nconst limit = config.limit ?? 10;\n\nfunction matchFilter(row, f) {\n  const fieldValue = row[f.field];\n\n  if (fieldValue === undefined || fieldValue === null) return true;\n\n  const isArray = Array.isArray(fieldValue);\n  const valueStr = isArray ? fieldValue.join(',') : String(fieldValue);\n\n  switch (f.operator) {\n    case 'EXCLUDES':\n      return !(f.values || []).some((v) => valueStr.includes(String(v)));\n\n    case 'INCLUDES':\n      return (f.values || []).some((v) => valueStr.includes(String(v)));\n\n    case '==':\n      return String(fieldValue) == String(f.value);\n\n    case '!=':\n      return String(fieldValue) != String(f.value);\n\n    case '<':\n      return Number(fieldValue) < Number(f.value);\n\n    case '<=':\n      return Number(fieldValue) <= Number(f.value);\n\n    case '>':\n      return Number(fieldValue) > Number(f.value);\n\n    case '>=':\n      return Number(fieldValue) >= Number(f.value);\n\n    default:\n      return true;\n  }\n}\n\n// 3. 套用所有篩選條件\nlet results = menu.filter((row) =>\n  filters.every((f) => matchFilter(row, f)),\n);\n\n// 4. 排序\nif (sortBy) {\n  results = results.sort((a, b) => {\n    const av = a[sortBy];\n    const bv = b[sortBy];\n    if (av == null && bv == null) return 0;\n    if (av == null) return 1;\n    if (bv == null) return -1;\n    const numA = Number(av);\n    const numB = Number(bv);\n    if (!Number.isNaN(numA) && !Number.isNaN(numB)) {\n      return sortOrder === 'DESC' ? numB - numA : numA - numB;\n    }\n    // 字串排序\n    const sa = String(av);\n    const sb = String(bv);\n    return sortOrder === 'DESC' ? sb.localeCompare(sa) : sa.localeCompare(sb);\n  });\n}\n\n// 5. 限制筆數\nif (limit != null) {\n  results = results.slice(0, limit);\n}\n\n// 6. 傳給下一個節點\nreturn [\n  {\n    json: {\n      all_menu: menu,\n      constraints: config,\n      candidates: results,\n    },\n  },\n];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        400,
+        96
+      ],
+      "id": "ead3a295-d942-468b-8bf4-ecdbf572518d",
+      "name": "篩選菜色"
+    },
+    {
+      "parameters": {
+        "modelId": {
+          "__rl": true,
+          "value": "models/gemini-2.5-flash",
+          "mode": "list",
+          "cachedResultName": "models/gemini-2.5-flash"
+        },
+        "messages": {
+          "values": [
+            {
+              "content": "={{ $('Webhook from Line Message').item.json.body.events[0].message.text }}"
+            },
+            {
+              "content": "=你是一個幫我解析點餐需求的助手。\n\n餐點欄位名稱舉例：\n- Dish_ID\n- Dish_Name\n- Price\n- Description\n- Main_Ingredients\n- Tags\n- Category\n- Portion_Type\n- Suggested_Persons\n- Priority_Score\n\n使用者會說例如：\n- 我不想吃豬肉\n- 兩個人吃，預算 300 以內\n- 不要太辣，幫我推薦幾道菜\n\n請你只輸出一個 JSON，格式如下（範例）：\n\n{\n  \"filters\": [\n    {\n      \"field\": \"Main_Ingredients\",\n      \"operator\": \"EXCLUDES\",\n      \"values\": [\"豬肉\"]\n    },\n    {\n      \"field\": \"Price\",\n      \"operator\": \"<=\",\n      \"value\": 300\n    },\n    {\n      \"field\": \"Suggested_Persons\",\n      \"operator\": \"==\",\n      \"value\": 2\n    },\n    {\n      \"field\": \"Tags\",\n      \"operator\": \"EXCLUDES\",\n      \"values\": [\"辣\"]\n    }\n  ],\n  \"sortBy\": \"Priority_Score\",\n  \"sortOrder\": \"DESC\",\n  \"limit\": 5\n}\n\noperator 可以是：\n- \"==\", \"!=\", \"<\", \"<=\", \">\", \">=\"\n- \"INCLUDES\": 文字/陣列中包含任一 values\n- \"EXCLUDES\": 文字/陣列中不包含任何 values\n\n請務必回傳合法 JSON，不要加 ```，不要多餘說明。\n",
+              "role": "model"
+            }
+          ]
+        },
+        "jsonOutput": "={{ true }}",
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.googleGemini",
+      "typeVersion": 1,
+      "position": [
+        96,
+        96
+      ],
+      "id": "58c67285-8342-4bcd-b115-c37249585549",
+      "name": "列出限制條件"
+    },
+    {
+      "parameters": {
+        "modelId": {
+          "__rl": true,
+          "value": "models/gemini-2.5-flash",
+          "mode": "list",
+          "cachedResultName": "models/gemini-2.5-flash"
+        },
+        "messages": {
+          "values": [
+            {
+              "content": "=全部菜單 (all_menu，陣列，每個元素是 1 道菜):{{ JSON.stringify($json.all_menu, null, 2) }}。使用者需求 (constraints):{{ JSON.stringify($json.constraints, null, 2) }}。可選的菜色 (candidates，陣列，每個元素是 1 道菜):{{ JSON.stringify($json.candidates, null, 2) }}。\n"
+            },
+            {
+              "content": "=你是一個餐廳點餐助手。\n\n我會提供：\n- 全部菜單 all_menu\n- 使用者需求 constraints\n- 經過篩選的候選菜色 candidates\n\n請用繁體中文生成一段回覆給 LINE 使用者：\n- 先簡單重述使用者的需求\n- 列出 3~5 道推薦菜色，每道包含：名稱、價格、主要食材、簡短描述\n- 若 candidates 為空，說明找不到完全符合的菜色，這種情況下請從 all_menu 中給予 2~3 道「最接近」的菜色建議（例如預算稍高或人數略不同），一定要給\n- 若有許多組合，請依照推薦度給予適合的選擇\n- 最終回答請你只輸出一個 JSON，格式如下（範例）：\n\n{\n  \"response\": \"[推薦菜色結果]\"\n}\n\n請務必回傳合法 JSON，不要加 ```，不要多餘說明。",
+              "role": "model"
+            }
+          ]
+        },
+        "jsonOutput": true,
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.googleGemini",
+      "typeVersion": 1,
+      "position": [
+        592,
+        96
+      ],
+      "id": "e71cdf1b-f656-4567-86b8-c852269e2d4a",
+      "name": "轉成自然語言",
+      "credentials": {
+        "googlePalmApi": {
+          "id": "uI2IysovMInGxa7T",
+          "name": "Google Gemini(PaLM) Api account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// 從 static data 取出菜單\nconst staticData = $getWorkflowStaticData('global');\nconst menu = staticData.menu || [];\n\n// 從 Webhook 拿使用者輸入文字\nconst userText = $('Webhook from Line Message').item.json.body?.events?.[0]?.message?.text ?? '';\n\n// 輸出一個 item，裡面同時帶著 menu + userText\nreturn [\n  {\n    json: {\n      menu,\n      userText,\n    },\n  },\n];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -112,
+        96
+      ],
+      "id": "4b64cd7d-e59a-419d-a9ad-4f68e35a5621",
+      "name": "傳入使用者需求以及菜單給LLM"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.line.me/v2/bot/message/push",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "to",
+              "value": "={{$node['Webhook from Line Message'].json.body.events[0].source.userId}}"
+            },
+            {
+              "name": "messages[0].type",
+              "value": "=text"
+            },
+            {
+              "name": "messages[0].text",
+              "value": "=請輸入使用者需求或上傳菜單\n"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "308638f7-e076-4005-b093-62b91debc50b",
+      "name": "請輸入使用者需求或上傳菜單",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [
+        -112,
+        288
+      ],
+      "typeVersion": 4.2,
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "AhDppvNGorOvfRNN",
+          "name": "Header Auth account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.line.me/v2/bot/message/push",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "to",
+              "value": "={{$node['Webhook from Line Message'].json.body.events[0].source.userId}}"
+            },
+            {
+              "name": "messages[0].type",
+              "value": "=text"
+            },
+            {
+              "name": "messages[0].text",
+              "value": "=菜單上傳成功"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "952bef32-9e7e-44d1-a149-95615fae6cf2",
+      "name": "菜單上傳成功",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [
+        592,
+        -64
+      ],
+      "typeVersion": 4.2,
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "AhDppvNGorOvfRNN",
+          "name": "Header Auth account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.line.me/v2/bot/message/push",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "to",
+              "value": "={{$node['Webhook from Line Message'].json.body.events[0].source.userId}}"
+            },
+            {
+              "name": "messages[0].type",
+              "value": "=text"
+            },
+            {
+              "name": "messages[0].text",
+              "value": "={{JSON.parse(($json.content.parts.length > 1 ? $json.content.parts[1].text : $json.content.parts[$json.content.parts.length-1].text).replace(/^```json\\s*/, '').replace(/```$/, '')).response.replace(/\\\\n/g, '\\n').replace(/\\*/g, '')}}\n"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "d917726d-25a3-4e10-a3ea-037b0a6e962e",
+      "name": "回傳推薦菜色",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [
+        944,
+        96
+      ],
+      "typeVersion": 4.2,
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "AhDppvNGorOvfRNN",
+          "name": "Header Auth account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "version": 2,
+            "leftValue": "",
+            "caseSensitive": true,
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "b63773bb-f010-4018-8142-240c9aaa4570",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              },
+              "leftValue": "={{ $json.body.events[0].message.type }}",
+              "rightValue": "text"
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "3e361922-f931-4ab8-9e87-5f59603ffa82",
+      "name": "驗證訊息格式否是文字",
+      "type": "n8n-nodes-base.if",
+      "position": [
+        -496,
+        112
+      ],
+      "typeVersion": 2.2
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "version": 2,
+            "leftValue": "",
+            "caseSensitive": true,
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "b63773bb-f010-4018-8142-240c9aaa4570",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              },
+              "leftValue": "={{ $json.body.events[0].message.type }}",
+              "rightValue": "file"
+            },
+            {
+              "id": "6191dd5b-ddba-4cfb-9c1a-f77d88643abe",
+              "leftValue": "={{$json.body.events[0].message.fileName}}",
+              "rightValue": ".xlsx",
+              "operator": {
+                "type": "string",
+                "operation": "endsWith"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "5fa15817-7150-4a2f-b8f3-2cbd609eaac7",
+      "name": "驗證訊息是否是菜單格式檔案",
+      "type": "n8n-nodes-base.if",
+      "position": [
+        -688,
+        -48
+      ],
+      "typeVersion": 2.2
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Webhook from Line Message": {
+      "main": [
+        [
+          {
+            "node": "驗證訊息是否是菜單格式檔案",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract from File": {
+      "main": [
+        [
+          {
+            "node": "儲存菜單至全域變數中",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "取得檔案": {
+      "main": [
+        [
+          {
+            "node": "Extract from File",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "篩選菜色": {
+      "main": [
+        [
+          {
+            "node": "轉成自然語言",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "列出限制條件": {
+      "main": [
+        [
+          {
+            "node": "篩選菜色",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "轉成自然語言": {
+      "main": [
+        [
+          {
+            "node": "回傳推薦菜色",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "儲存菜單至全域變數中": {
+      "main": [
+        [
+          {
+            "node": "菜單上傳成功",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "傳入使用者需求以及菜單給LLM": {
+      "main": [
+        [
+          {
+            "node": "列出限制條件",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "驗證訊息格式否是文字": {
+      "main": [
+        [
+          {
+            "node": "傳入使用者需求以及菜單給LLM",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "請輸入使用者需求或上傳菜單",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "驗證訊息是否是菜單格式檔案": {
+      "main": [
+        [
+          {
+            "node": "取得檔案",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "驗證訊息格式否是文字",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "122199d8-649f-4c45-b159-40f6dc6aa1cf",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "d944840307082fc113a05c5f2c4a1d6269d417df477d4c39609755d71c03212f"
+  },
+  "id": "aJvNZaByVkgJsKri",
+  "tags": []
+}
